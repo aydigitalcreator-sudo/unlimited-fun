@@ -46,7 +46,7 @@ export default async function handler(req, res) {
         generationConfig: { maxOutputTokens: 2048 }
       });
       const d = await r.json();
-      if (!r.ok) throw new Error("gemini");
+      if (!r.ok) throw new Error("Gemini " + r.status + ": " + String((d.error && d.error.message) || "").slice(0, 200));
       reply = (d.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join("");
     } else if (E.OPENAI_API_KEY) {
       const r = await post("https://api.openai.com/v1/chat/completions", { authorization: "Bearer " + E.OPENAI_API_KEY }, {
@@ -55,14 +55,14 @@ export default async function handler(req, res) {
         messages: [{ role: "system", content: system }, ...msgs]
       });
       const d = await r.json();
-      if (!r.ok) throw new Error("openai");
+      if (!r.ok) throw new Error("OpenAI " + r.status + ": " + String((d.error && d.error.message) || "").slice(0, 200));
       reply = d.choices?.[0]?.message?.content || "";
     } else if (E.ANTHROPIC_API_KEY) {
       const r = await post("https://api.anthropic.com/v1/messages", { "x-api-key": E.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" }, {
         model: E.ANTHROPIC_MODEL || "claude-haiku-5-5", max_tokens: 1500, system, messages: msgs
       });
       const d = await r.json();
-      if (!r.ok) throw new Error("anthropic");
+      if (!r.ok) throw new Error("Anthropic " + r.status + ": " + String((d.error && d.error.message) || "").slice(0, 200));
       reply = (d.content || []).filter(b => b.type === "text").map(b => b.text).join("");
     } else {
       return res.status(500).json({ error: "No API key set on the server" });
@@ -70,6 +70,6 @@ export default async function handler(req, res) {
     if (!reply) throw new Error("empty");
     return res.status(200).json({ reply });
   } catch (e) {
-    return res.status(502).json({ error: "AI unavailable" });
+    return res.status(502).json({ error: "AI unavailable", detail: String(e.message || e).slice(0, 250) });
   }
-    }
+          }
