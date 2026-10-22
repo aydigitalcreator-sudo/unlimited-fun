@@ -20,7 +20,7 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(204).end();
-  if (req.method !== "POST") return res.status(405).json({ error: "POST only", version: "chat.js v3 (gemini-3.8-flash)" });
+  if (req.method !== "POST") return res.status(405).json({ error: "POST only", version: "chat.js v4 (retry + model fallback)" });
 
   const { messages, mode, spicy } = req.body || {};
   if (!Array.isArray(messages) || !messages.length) return res.status(400).json({ error: "No messages" });
@@ -39,7 +39,7 @@ export default async function handler(req, res) {
   try {
     let reply = "";
     if (E.GEMINI_API_KEY) {
-      const models = [E.GEMINI_MODEL, "gemini-3.8-flash", "gemini-flash-latest"].filter(Boolean);
+      const models = [E.GEMINI_MODEL, "gemini-3.8-flash", "gemini-flash-latest", "gemini-flash-lite-latest"].filter(Boolean);
       const body = {
         systemInstruction: { parts: [{ text: system }] },
         contents: msgs.map(m => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] })),
@@ -47,11 +47,16 @@ export default async function handler(req, res) {
       };
       let last = "";
       for (const model of models) {
-        const r = await post(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${E.GEMINI_API_KEY}`, {}, body);
-        const d = await r.json();
+        let r, d;
+        for (let i = 0; i < 2; i++) {           // one quick retry when Google says "high demand"
+          r = await post(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${E.GEMINI_API_KEY}`, {}, body);
+          d = await r.json();
+          if (r.status !== 503) break;
+          await new Promise(x => setTimeout(x, 800));
+        }
         if (r.ok) { reply = (d.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join(""); break; }
         last = "Gemini " + r.status + " (" + model + "): " + String((d.error && d.error.message) || "").slice(0, 160);
-        if (r.status !== 404) break;
+        if (![404, 429, 500, 503].includes(r.status)) break;   // try the next model for these errors
       }
       if (!reply) throw new Error(last || "Gemini returned no text");
     } else if (E.OPENAI_API_KEY) {
