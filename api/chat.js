@@ -72,4 +72,4 @@ export default async function handler(req, res) {
   } catch (e) {
     return res.status(502).json({ error: "AI unavailable", detail: String(e.message || e).slice(0, 250) });
   }
-          }
+}
