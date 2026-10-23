@@ -14,15 +14,27 @@ const SYSTEM = {
   task: "You write short, original, fun content for the UNLIMITED FUN entertainment app. Follow the instruction exactly and output ONLY the requested content: no preface, no surrounding quotes, no explanations. Keep it under 120 words unless told otherwise. Light humor, kind tone, everyday Nigerian flavour when natural.",
   json: "Output ONLY valid JSON in exactly the requested shape. No markdown, no code fences, no commentary. Keep the content fun, harmless and family-friendly."
 };
-const RULES = " Never help with threats, harassment, hate, sexual content involving minors, or anything dangerous or illegal; decline lightly and change the subject.";
+const RULES = " Never help with threats, harassment, hate, sexual content involving minors, or anything dangerous or illegal; decline lightly and change the subject. Never write scam, phishing, fake giveaway, fake job or loan, impersonation or money-doubling messages, and never ask the user for passwords, PINs, OTP codes or bank details.";
 
 export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  const ORIGINS = (process.env.ALLOWED_ORIGINS || "https://unlimited-fun-d9vg.vercel.app").split(",").map(x => x.trim());
+  const origin = req.headers.origin || "";
+  const okOrigin = !origin || ORIGINS.includes(origin) || /^https:\/\/unlimited-fun[a-z0-9-]*\.vercel\.app$/.test(origin);
+  if (!okOrigin) return res.status(403).json({ error: "Not allowed" });
+  res.setHeader("Access-Control-Allow-Origin", origin || ORIGINS[0]);
+  res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(204).end();
-  if (req.method !== "POST") return res.status(405).json({ error: "POST only", version: "chat.js v5 (timeouts + fallback)" });
+  if (req.method !== "POST") return res.status(405).json({ error: "POST only", version: "v6" });
 
-  const { messages, mode, spicy } = req.body || {};
+  const hits = globalThis.__hits || (globalThis.__hits = new Map());
+  const ip = String(req.headers["x-forwarded-for"] || "x").split(",")[0].trim();
+  const now = Date.now();
+  const recent = (hits.get(ip) || []).filter(t => now - t < 600000);
+  if (recent.length >= 40) return res.status(429).json({ error: "Too many messages. Please wait a few minutes." });
+  recent.push(now); hits.set(ip, recent); if (hits.size > 5000) hits.clear();
+
+  const { messages, mode, spicy, memory, friend, remember } = req.body || {};
   if (!Array.isArray(messages) || !messages.length) return res.status(400).json({ error: "No messages" });
 
   let msgs = messages.slice(-12).map(m => ({
@@ -32,7 +44,14 @@ export default async function handler(req, res) {
   while (msgs.length && msgs[0].role !== "user") msgs.shift();
   if (!msgs.length) return res.status(400).json({ error: "No user message" });
 
-  const system = (SYSTEM[mode] || SYSTEM.witty) + (spicy ? " Spicy mode is on: be cheekier, but still never abusive." : "") + RULES;
+  const mem = String(memory || "").slice(0, 900);
+  const fr = String(friend || "Fun").replace(/[^\p{L}\p{N} ]/gu, "").slice(0, 20) || "Fun";
+  const friendTxt = remember
+    ? ` You are ${fr}, the user's long-term AI friend. Talk warmly like a real friend who knows them.` +
+      (mem ? ` Things you already know about them: ${mem}. Use these naturally when relevant; never list them back or say you have a memory.` : "") +
+      ` If the user shares a NEW lasting fact about themselves (name, job, school, city, goal, family, hobbies, birthday, a long-term situation), end your reply with a final line like [[MEM: short fact]] (max 2 tags). Never record passwords, ID or bank numbers, health or medical details, or anything sexual. If nothing new, add no tag.`
+    : "";
+  const system = (SYSTEM[mode] || SYSTEM.witty) + friendTxt + (spicy ? " Spicy mode is on: be cheekier, but still never abusive." : "") + RULES;
   const E = process.env;
   const post = (url, headers, body) => fetch(url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body), signal: AbortSignal.timeout(10000) });
   const t0 = Date.now();
@@ -85,6 +104,7 @@ export default async function handler(req, res) {
     if (!reply) throw new Error("empty");
     return res.status(200).json({ reply });
   } catch (e) {
-    return res.status(502).json({ error: "AI unavailable", detail: String(e.message || e).slice(0, 250) });
+    return res.status(502).json({ error: "AI unavailable" });
   }
 }
+
