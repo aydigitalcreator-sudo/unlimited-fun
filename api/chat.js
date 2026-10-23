@@ -20,7 +20,7 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(204).end();
-  if (req.method !== "POST") return res.status(405).json({ error: "POST only", version: "chat.js v4 (retry + model fallback)" });
+  if (req.method !== "POST") return res.status(405).json({ error: "POST only", version: "chat.js v5 (timeouts + fallback)" });
 
   const { messages, mode, spicy } = req.body || {};
   if (!Array.isArray(messages) || !messages.length) return res.status(400).json({ error: "No messages" });
@@ -34,7 +34,8 @@ export default async function handler(req, res) {
 
   const system = (SYSTEM[mode] || SYSTEM.witty) + (spicy ? " Spicy mode is on: be cheekier, but still never abusive." : "") + RULES;
   const E = process.env;
-  const post = (url, headers, body) => fetch(url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
+  const post = (url, headers, body) => fetch(url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body), signal: AbortSignal.timeout(10000) });
+  const t0 = Date.now();
 
   try {
     let reply = "";
@@ -47,16 +48,19 @@ export default async function handler(req, res) {
       };
       let last = "";
       for (const model of models) {
+        if (Date.now() - t0 > 35000) break;
         let r, d;
         for (let i = 0; i < 2; i++) {           // one quick retry when Google says "high demand"
-          r = await post(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${E.GEMINI_API_KEY}`, {}, body);
-          d = await r.json();
+          try {
+            r = await post(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${E.GEMINI_API_KEY}`, {}, body);
+            d = await r.json();
+          } catch (e) { r = { ok: false, status: 0 }; d = { error: { message: "timeout" } }; }
           if (r.status !== 503) break;
-          await new Promise(x => setTimeout(x, 800));
+          await new Promise(x => setTimeout(x, 600));
         }
         if (r.ok) { reply = (d.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join(""); break; }
         last = "Gemini " + r.status + " (" + model + "): " + String((d.error && d.error.message) || "").slice(0, 160);
-        if (![404, 429, 500, 503].includes(r.status)) break;   // try the next model for these errors
+        if (![0, 404, 429, 500, 503].includes(r.status)) break;   // try the next model for these errors
       }
       if (!reply) throw new Error(last || "Gemini returned no text");
     } else if (E.OPENAI_API_KEY) {
