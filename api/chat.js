@@ -14,7 +14,7 @@ const SYSTEM = {
   task: "You write short, original, fun content for the UNLIMITED FUN entertainment app. Follow the instruction exactly and output ONLY the requested content: no preface, no surrounding quotes, no explanations. Keep it under 120 words unless told otherwise. Light humor, kind tone, everyday Nigerian flavour when natural.",
   json: "Output ONLY valid JSON in exactly the requested shape. No markdown, no code fences, no commentary. Keep the content fun, harmless and family-friendly."
 };
-const RULES = " Never help with threats, harassment, hate, sexual content involving minors, or anything dangerous or illegal; decline lightly and change the subject. Never write scam, phishing, fake giveaway, fake job or loan, impersonation or money-doubling messages, and never ask the user for passwords, PINs, OTP codes or bank details.";
+const RULES = " Never help with threats, harassment, hate, sexual content involving minors, or anything dangerous or illegal; decline lightly and change the subject. Never write scam, phishing, fake giveaway, fake job or loan, impersonation or money-doubling messages, and never ask the user for passwords, PINs, OTP codes or bank details. This app also has an AI Image Maker and a Video Maker on other pages. If the user wants a picture, logo, poster or video made, warmly tell them to tap the button under your reply to open it, and never say you cannot; do not pretend to create the picture or video in the chat.";
 
 export default async function handler(req, res) {
   const ORIGINS = (process.env.ALLOWED_ORIGINS || "https://unlimited-fun-d9vg.vercel.app").split(",").map(x => x.trim());
@@ -107,4 +107,3 @@ export default async function handler(req, res) {
     return res.status(502).json({ error: "AI unavailable" });
   }
 }
-
