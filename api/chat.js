@@ -14,32 +14,20 @@ const SYSTEM = {
   task: "You write short, original, fun content for the UNLIMITED FUN entertainment app. Follow the instruction exactly and output ONLY the requested content: no preface, no surrounding quotes, no explanations. Keep it under 120 words unless told otherwise. Light humor, kind tone, everyday Nigerian flavour when natural.",
   json: "Output ONLY valid JSON in exactly the requested shape. No markdown, no code fences, no commentary. Keep the content fun, harmless and family-friendly."
 };
-const RULES = " Never help with threats, harassment, hate, sexual content involving minors, or anything dangerous or illegal; decline lightly and change the subject. Never write scam, phishing, fake giveaway, fake job or loan, impersonation or money-doubling messages, and never ask the user for passwords, PINs, OTP codes or bank details. This app also has an AI Image Maker and a Video Maker on other pages. If the user wants a picture, logo, poster or video made, warmly tell them to tap the button under your reply to open it, and never say you cannot; do not pretend to create the picture or video in the chat.";
+import { guard } from "./_lib.js";
+
+const RULES = " Never help with threats, harassment, hate, sexual content involving minors, or anything dangerous or illegal; decline lightly and change the subject. Never write scam, phishing, fake giveaway, fake job or loan, impersonation or money-doubling messages, and never ask the user for passwords, PINs, OTP codes or bank details. If the user attaches a photo or document, read it carefully and answer from it. If you used web search, name the useful apps or websites; never invent links, because the app shows search buttons itself. This app also has an AI Image Maker and a Video Maker on other pages. If the user wants a picture, logo, poster or video made, warmly tell them to tap the button under your reply to open it, and never say you cannot; do not pretend to create the picture or video in the chat.";
 
 export default async function handler(req, res) {
-  const ORIGINS = (process.env.ALLOWED_ORIGINS || "https://unlimited-fun-d9vg.vercel.app").split(",").map(x => x.trim());
-  const origin = req.headers.origin || "";
-  const okOrigin = !origin || ORIGINS.includes(origin) || /^https:\/\/unlimited-fun[a-z0-9-]*\.vercel\.app$/.test(origin);
-  if (!okOrigin) return res.status(403).json({ error: "Not allowed" });
-  res.setHeader("Access-Control-Allow-Origin", origin || ORIGINS[0]);
-  res.setHeader("Vary", "Origin");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  if (req.method === "OPTIONS") return res.status(204).end();
-  if (req.method !== "POST") return res.status(405).json({ error: "POST only", version: "v6" });
+  const g = await guard(req, res, "chat");
+  if (!g) return;
 
-  const hits = globalThis.__hits || (globalThis.__hits = new Map());
-  const ip = String(req.headers["x-forwarded-for"] || "x").split(",")[0].trim();
-  const now = Date.now();
-  const recent = (hits.get(ip) || []).filter(t => now - t < 600000);
-  if (recent.length >= 40) return res.status(429).json({ error: "Too many messages. Please wait a few minutes." });
-  recent.push(now); hits.set(ip, recent); if (hits.size > 5000) hits.clear();
-
-  const { messages, mode, spicy, memory, friend, remember } = req.body || {};
+  const { messages, mode, spicy, memory, friend, remember, attachments, web } = req.body || {};
   if (!Array.isArray(messages) || !messages.length) return res.status(400).json({ error: "No messages" });
 
   let msgs = messages.slice(-12).map(m => ({
     role: m.role === "assistant" ? "assistant" : "user",
-    content: String(m.content || "").slice(0, 1500)
+    content: String(m.content || "").slice(0, 14000)
   })).filter(m => m.content);
   while (msgs.length && msgs[0].role !== "user") msgs.shift();
   if (!msgs.length) return res.status(400).json({ error: "No user message" });
@@ -53,31 +41,50 @@ export default async function handler(req, res) {
     : "";
   const system = (SYSTEM[mode] || SYSTEM.witty) + friendTxt + (spicy ? " Spicy mode is on: be cheekier, but still never abusive." : "") + RULES;
   const E = process.env;
-  const post = (url, headers, body) => fetch(url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body), signal: AbortSignal.timeout(10000) });
+  const post = (url, headers, body, tmo = 10000) => fetch(url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body), signal: AbortSignal.timeout(tmo) });
+  const OKMIME = /^(image\/(jpeg|png|webp|gif)|application\/pdf)$/;
+  const atts = (Array.isArray(attachments) ? attachments : []).slice(0, 3)
+    .filter(a => a && OKMIME.test(String(a.mime)) && typeof a.data === "string" && a.data.length < 4200000 && /^[A-Za-z0-9+/=]+$/.test(a.data.slice(0, 200)))
+    .map(a => ({ mime: String(a.mime), data: a.data }));
+  let sources = [];
   const t0 = Date.now();
 
   try {
     let reply = "";
     if (E.GEMINI_API_KEY) {
       const models = [E.GEMINI_MODEL, "gemini-3.8-flash", "gemini-flash-latest", "gemini-flash-lite-latest"].filter(Boolean);
-      const body = {
-        systemInstruction: { parts: [{ text: system }] },
-        contents: msgs.map(m => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] })),
-        generationConfig: { maxOutputTokens: 2048 }
-      };
+      const useWeb = !!web, big = atts.length > 0 || useWeb;
+      const tmo = big ? 28000 : 10000, deadline = big ? 50000 : 35000;
+      const contents = msgs.map(m => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] }));
+      if (atts.length) {
+        const lu = contents.map(c => c.role).lastIndexOf("user");
+        contents[lu].parts = [...atts.map(a => ({ inlineData: { mimeType: a.mime, data: a.data } })), ...contents[lu].parts];
+      }
+      const body = { systemInstruction: { parts: [{ text: system }] }, contents, generationConfig: { maxOutputTokens: 2048 } };
+      if (useWeb) body.tools = [{ google_search: {} }];
       let last = "";
       for (const model of models) {
-        if (Date.now() - t0 > 35000) break;
+        if (Date.now() - t0 > deadline) break;
         let r, d;
-        for (let i = 0; i < 2; i++) {           // one quick retry when Google says "high demand"
+        for (let i = 0; i < 3; i++) {
           try {
-            r = await post(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${E.GEMINI_API_KEY}`, {}, body);
+            r = await post(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${E.GEMINI_API_KEY}`, {}, body, tmo);
             d = await r.json();
           } catch (e) { r = { ok: false, status: 0 }; d = { error: { message: "timeout" } }; }
-          if (r.status !== 503) break;
-          await new Promise(x => setTimeout(x, 600));
+          if (r.status === 503) { await new Promise(x => setTimeout(x, 600)); continue; }        // "high demand": try again
+          if (!r.ok && body.tools && [400, 403, 429].includes(r.status)) { delete body.tools; continue; }   // web search not allowed: answer without it
+          break;
         }
-        if (r.ok) { reply = (d.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join(""); break; }
+        if (r.ok) {
+          const cand = d.candidates?.[0];
+          reply = (cand?.content?.parts || []).map(p => p.text || "").join("");
+          const seen = new Set();
+          sources = (cand?.groundingMetadata?.groundingChunks || []).map(c => c.web)
+            .filter(w => w && /^https:\/\//.test(w.uri || ""))
+            .filter(w => { const k = w.title || w.uri; if (seen.has(k)) return false; seen.add(k); return true; })
+            .slice(0, 4).map(w => ({ t: String(w.title || w.uri).slice(0, 80), u: w.uri }));
+          break;
+        }
         last = "Gemini " + r.status + " (" + model + "): " + String((d.error && d.error.message) || "").slice(0, 160);
         if (![0, 404, 429, 500, 503].includes(r.status)) break;   // try the next model for these errors
       }
@@ -102,7 +109,7 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "No API key set on the server" });
     }
     if (!reply) throw new Error("empty");
-    return res.status(200).json({ reply });
+    return res.status(200).json({ reply, sources });
   } catch (e) {
     return res.status(502).json({ error: "AI unavailable" });
   }
